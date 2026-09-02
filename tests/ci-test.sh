@@ -28,24 +28,24 @@ check() {
 
 echo "--- phpMyAdmin lifecycle ---"
 $CLI pma stop >/dev/null 2>&1 || true
-check "pma status says not running before start" bash -c "! $CLI pma status | grep -qi RUNNING"
+check "pma status says not running before start" bash -c "! $CLI pma status | grep -q 'RUNNING on'"
 
 $CLI pma start
 sleep 1
 PORT="$(cat "$PMA_STATE")"
 check "pma writes a port flag ($PORT)" test -f "$PMA_STATE"
 check "pma serves HTTP on port $PORT" curl -fsS -o /dev/null "http://127.0.0.1:${PORT}/index.php"
-check "pma status reports RUNNING" bash -c "$CLI pma status | grep -qi RUNNING"
+check "pma status reports RUNNING" bash -c "$CLI pma status | grep -q 'RUNNING on'"
 
 $CLI pma restart
 sleep 1
 check "pma still up after restart" curl -fsS -o /dev/null "http://127.0.0.1:$(cat "$PMA_STATE")/index.php"
 
 $CLI pma stop
-check "pma status says not running after stop" bash -c "! $CLI pma status | grep -qi RUNNING"
+check "pma status says not running after stop" bash -c "! $CLI pma status | grep -q 'RUNNING on'"
 
 echo "--- MariaDB server detection ---"
-export MARIADB_STATUS_CMD="echo 'mariadb service: running'"
+export MARIADB_STATUS_CMD="mariadb -N -e 'SELECT VERSION();'"
 check "mariadb status detects live server" bash -c "$CLI mariadb status | grep -qi running"
 
 echo "--- MariaDB command wiring (start uses 'run', never 'start') ---"

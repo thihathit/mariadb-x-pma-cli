@@ -13,7 +13,7 @@
 # to auto-start at login.
 #
 # Environment overrides:
-#   MARIADB_START_CMD, MARIADB_STOP_CMD, MARIADB_STATUS_CMD
+#   MARIADB_START_CMD, MARIADB_STOP_CMD, MARIADB_STATUS_CMD, MARIADB_PING_CMD
 #   PMA_DOCROOT,       PMA_PHP,          PMA_BIND,  PMA_STATE
 
 set -euo pipefail
@@ -27,25 +27,38 @@ PROG="mariadb-x-pma"
 MARIADB_START_CMD="${MARIADB_START_CMD:-brew services run mariadb}"
 MARIADB_STOP_CMD="${MARIADB_STOP_CMD:-brew services stop mariadb}"
 MARIADB_STATUS_CMD="${MARIADB_STATUS_CMD:-brew services info mariadb}"
+MARIADB_PING_CMD="${MARIADB_PING_CMD:-mariadb -N -e \"SELECT VERSION();\"}"
+
+# brew is only consulted when a default command uses it; custom
+# MARIADB_*_CMD overrides must work without brew (e.g. in CI).
+mariadb_check_brew() {
+    local cmd="$1"
+    if [[ "$cmd" == brew* ]] && ! command -v brew >/dev/null 2>&1; then
+        echo "$PROG: error: brew is required for the default '$cmd' (override MARIADB_*_CMD to use another manager)" >&2
+        return 1
+    fi
+}
 
 mariadb_start() {
-    require_cmd brew "brew is required to manage MariaDB"
+    mariadb_check_brew "$MARIADB_START_CMD" || exit 1
     echo "Starting MariaDB (on-demand, not auto-start)..."
     eval "$MARIADB_START_CMD"
     echo "MariaDB started."
 }
 
 mariadb_stop() {
-    require_cmd brew "brew is required to manage MariaDB"
+    mariadb_check_brew "$MARIADB_STOP_CMD" || exit 1
     eval "$MARIADB_STOP_CMD"
     echo "MariaDB stopped."
 }
 
 mariadb_status() {
-    require_cmd brew "brew is required to manage MariaDB"
+    mariadb_check_brew "$MARIADB_STATUS_CMD" || exit 1
     eval "$MARIADB_STATUS_CMD" | sed -n '1p'
-    if mariadb -N -e "SELECT VERSION();" >/dev/null 2>&1; then
-        echo "mariabd: running ($(mariadb -N -e 'SELECT VERSION();' 2>/dev/null))"
+    if eval "$MARIADB_PING_CMD" >/dev/null 2>&1; then
+        local v
+        v="$(eval "$MARIADB_PING_CMD" 2>/dev/null)"
+        echo "mariadbd: running (${v})"
     else
         echo "mariadbd: stopped"
     fi
@@ -156,13 +169,6 @@ pma_restart() {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-require_cmd() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        echo "$PROG: error: $2" >&2
-        exit 1
-    fi
-}
 
 usage() {
     sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
