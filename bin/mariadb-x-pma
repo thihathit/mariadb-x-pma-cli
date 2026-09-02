@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+#
+# mariadb-x-pma — on-demand start/stop/status for MariaDB and phpMyAdmin.
+#
+# Usage:
+#   mariadb-x-pma mariadb start|stop|status|restart
+#   mariadb-x-pma pma     start|stop|status|restart
+#   mariadb-x-pma status                 # both at once
+#   mariadb-x-pma serve                  # start both
+#   mariadb-x-pma help
+#
+# Both services run only while you've started them. Nothing is registered
+# to auto-start at login.
+#
+# Environment overrides:
+#   MARIADB_START_CMD, MARIADB_STOP_CMD, MARIADB_STATUS_CMD
+#   PMA_DOCROOT,       PMA_PHP,          PMA_BIND,  PMA_STATE
+
+set -euo pipefail
+
+PROG="mariadb-x-pma"
+
+# ---------------------------------------------------------------------------
+# MariaDB
+# ---------------------------------------------------------------------------
+
+MARIADB_START_CMD="${MARIADB_START_CMD:-brew services run mariadb}"
+MARIADB_STOP_CMD="${MARIADB_STOP_CMD:-brew services stop mariadb}"
+MARIADB_STATUS_CMD="${MARIADB_STATUS_CMD:-brew services info mariadb}"
+
+mariadb_start() {
+    require_cmd brew "brew is required to manage MariaDB"
+    echo "Starting MariaDB (on-demand, not auto-start)..."
+    eval "$MARIADB_START_CMD"
+    echo "MariaDB started."
+}
+
+mariadb_stop() {
+    require_cmd brew "brew is required to manage MariaDB"
+    eval "$MARIADB_STOP_CMD"
+    echo "MariaDB stopped."
+}
+
+mariadb_status() {
+    require_cmd brew "brew is required to manage MariaDB"
+    eval "$MARIADB_STATUS_CMD" | sed -n '1p'
+    if mariadb -N -e "SELECT VERSION();" >/dev/null 2>&1; then
+        echo "mariabd: running ($(mariadb -N -e 'SELECT VERSION();' 2>/dev/null))"
+    else
+        echo "mariadbd: stopped"
+    fi
+}
+
+mariadb_restart() {
+    mariadb_stop
+    mariadb_start
+}
+
+# ---------------------------------------------------------------------------
+# phpMyAdmin
+# ---------------------------------------------------------------------------
+
+PMA_DOCROOT="${PMA_DOCROOT:-}"
+PMA_PHP="${PMA_PHP:-}"
+PMA_BIND="${PMA_BIND:-127.0.0.1}"
+PMA_STATE="${PMA_STATE:-/tmp/pma-port.flag}"
+
+pma_resolve() {
+    if [[ -z "$PMA_DOCROOT" ]]; then
+        if [[ -d /home/linuxbrew/.linuxbrew/share/phpmyadmin ]]; then
+            PMA_DOCROOT=/home/linuxbrew/.linuxbrew/share/phpmyadmin
+        elif command -v brew >/dev/null 2>&1; then
+            PMA_DOCROOT="$(brew --prefix 2>/dev/null)/share/phpmyadmin"
+        fi
+    fi
+    if [[ ! -d "$PMA_DOCROOT" ]]; then
+        echo "phpMyAdmin docroot not found. Set PMA_DOCROOT." >&2
+        return 1
+    fi
+    if [[ -z "$PMA_PHP" ]]; then
+        PMA_PHP="$(command -v php || true)"
+        if [[ -z "$PMA_PHP" ]] && command -v brew >/dev/null 2>&1; then
+            PMA_PHP="$(brew --prefix 2>/dev/null)/bin/php"
+        fi
+    fi
+}
+
+pma_is_running() {
+    [[ -f "$PMA_STATE" ]] && pgrep -f "php -S ${PMA_BIND}:$(cat "$PMA_STATE") -t $PMA_DOCROOT" >/dev/null 2>&1
+}
+
+pma_pick_port() {
+    python3 - <<'EOF'
+import socket
+for port in range(8080, 9000):
+    s = socket.socket()
+    s.settimeout(0.2)
+    try:
+        s.bind(("127.0.0.1", port))
+        s.close()
+        print(port)
+        break
+    except OSError:
+        s.close()
+EOF
+}
+
+pma_start() {
+    pma_resolve
+    local port
+    if pma_is_running; then
+        echo "phpMyAdmin already running on port $(cat "$PMA_STATE")."
+        echo "Open in your browser:  http://localhost:$(cat "$PMA_STATE")/"
+        return 0
+    fi
+    port="$(pma_pick_port)"
+    echo "Using free port: ${port}"
+    nohup "$PMA_PHP" -S "${PMA_BIND}:${port}" -t "$PMA_DOCROOT" >"/tmp/pma-${port}.log" 2>&1 &
+    sleep 1
+    if pgrep -f "php -S ${PMA_BIND}:${port} -t $PMA_DOCROOT" >/dev/null 2>&1; then
+        echo "$port" > "$PMA_STATE"
+        echo "phpMyAdmin is running."
+        echo "Open in your browser:  http://localhost:${port}/"
+    else
+        echo "Failed to start. Check /tmp/pma-${port}.log"
+        return 1
+    fi
+}
+
+pma_stop() {
+    if [[ -f "$PMA_STATE" ]]; then
+        local port
+        port="$(cat "$PMA_STATE")"
+        pkill -f "php -S ${PMA_BIND}:${port} -t $PMA_DOCROOT" 2>/dev/null || true
+        rm -f "$PMA_STATE"
+        echo "phpMyAdmin stopped (was on port ${port})."
+    else
+        echo "phpMyAdmin is not running."
+    fi
+}
+
+pma_status() {
+    if [[ -f "$PMA_STATE" ]] && pgrep -f "php -S ${PMA_BIND}:$(cat "$PMA_STATE")" >/dev/null 2>&1; then
+        echo "phpMyAdmin: RUNNING on ${PMA_BIND}:$(cat "$PMA_STATE")"
+        echo "Open in your browser:  http://localhost:$(cat "$PMA_STATE")/"
+    else
+        echo "phpMyAdmin: not running"
+    fi
+}
+
+pma_restart() {
+    pma_stop
+    pma_start
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+require_cmd() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "$PROG: error: $2" >&2
+        exit 1
+    fi
+}
+
+usage() {
+    sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+status_both() {
+    mariadb_status || true
+    pma_status || true
+}
+
+serve() {
+    mariadb_start || true
+    pma_start || true
+    echo
+    status_both
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+cmd="${1:-}"
+sub="${2:-}"
+
+case "$cmd" in
+    mariadb|maria|mysql)
+        case "$sub" in
+            start)   mariadb_start ;;
+            stop)    mariadb_stop ;;
+            status)  mariadb_status ;;
+            restart) mariadb_restart ;;
+            *)       echo "Usage: ${PROG} mariadb {start|stop|status|restart}"; exit 1 ;;
+        esac
+        ;;
+    pma|phpmyadmin)
+        case "$sub" in
+            start)   pma_start ;;
+            stop)    pma_stop ;;
+            status)  pma_status ;;
+            restart) pma_restart ;;
+            *)       usage 1 ;;
+        esac
+        ;;
+    status) status_both ;;
+    serve)  serve ;;
+    help|-h|--help) usage ;;
+    *)
+        usage 1
+        ;;
+esac

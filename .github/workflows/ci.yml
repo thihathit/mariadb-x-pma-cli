@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision MariaDB + PHP + phpMyAdmin
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            mariadb-server mariadb-client php-cli php-mysql curl
+          sudo service mariadb start
+          sudo mariadb -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD(''); FLUSH PRIVILEGES;" || true
+          sudo mkdir -p /opt/phpmyadmin
+          sudo curl -fsSL -o /tmp/pma.tar.gz \
+            https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.tar.gz
+          sudo tar -xzf /tmp/pma.tar.gz -C /opt/phpmyadmin --strip-components=1
+          php -v
+          mariadb --version
+
+      - name: Run CLI tests
+        run: bash tests/ci-test.sh
